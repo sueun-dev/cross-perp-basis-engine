@@ -1,0 +1,12 @@
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Environment & secrets
+.env
+
+# Editors
+.vscode/
+
+# macOS
+.DS_Store
