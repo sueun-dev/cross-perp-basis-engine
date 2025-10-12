@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import requests
 from requests import HTTPError
@@ -44,6 +44,7 @@ if API_KEY:
 
 _MARKET_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
 _MARKET_INFO_LOADED = False
+_ACCOUNT_SETTINGS_CACHE: Dict[str, Tuple[bool, int]] = {}
 
 
 def _get_orderbook(symbol: str) -> Dict[str, Any]:
@@ -69,8 +70,11 @@ def get_mid_price(symbol: str) -> float:
     return (best_bid + best_ask) / 2.0
 
 
-def _ensure_market_info_loaded() -> None:
+def _ensure_market_info_loaded(force_refresh: bool = False) -> None:
     global _MARKET_INFO_LOADED
+    if force_refresh:
+        _MARKET_INFO_CACHE.clear()
+        _MARKET_INFO_LOADED = False
     if _MARKET_INFO_LOADED:
         return
     response = requests.get(f"{REST}/info", headers=HEADERS, timeout=10)
@@ -114,6 +118,35 @@ def _get_min_notional(symbol: str) -> Decimal:
     if min_notional < 0:
         raise RuntimeError(f"Invalid min_order_size {min_notional} for {symbol}")
     return min_notional
+
+
+def round_base_amount(
+    symbol: str,
+    amount: Decimal | float | str,
+    *,
+    price: Decimal | float | None = None,
+    rounding=ROUND_CEILING,
+) -> Decimal:
+    if isinstance(amount, Decimal):
+        amount_dec = amount
+    elif isinstance(amount, (int, float)):
+        amount_dec = Decimal(str(amount))
+    else:
+        amount_dec = Decimal(amount)
+    lot_size = _get_lot_size(symbol)
+    multiples = (amount_dec / lot_size).to_integral_value(rounding=rounding)
+    rounded = multiples * lot_size
+    if rounded <= 0:
+        rounded = lot_size
+
+    min_notional = _get_min_notional(symbol)
+    if min_notional > 0:
+        price_dec = price if isinstance(price, Decimal) else (Decimal(str(price)) if price is not None else Decimal(str(get_mid_price(symbol))))
+        if rounded * price_dec < min_notional:
+            multiples = (min_notional / price_dec / lot_size).to_integral_value(rounding=ROUND_CEILING)
+            rounded = multiples * lot_size
+
+    return rounded
 
 
 def _lot_decimals(symbol: str) -> int:
@@ -165,7 +198,8 @@ def _get_top_of_book(symbol: str) -> Dict[str, Any]:
     return result
 
 
-def list_market_quotes() -> Dict[str, Dict[str, Any]]:
+def list_market_quotes(use_cache: bool = True) -> Dict[str, Dict[str, Any]]:
+    _ensure_market_info_loaded(force_refresh=not use_cache)
     quotes: Dict[str, Dict[str, Any]] = {}
     for symbol in list_symbols():
         try:
@@ -175,8 +209,11 @@ def list_market_quotes() -> Dict[str, Dict[str, Any]]:
     return quotes
 
 
-def get_funding_rates(symbol: str | None = None) -> Dict[str, Dict[str, Optional[Decimal]]]:
-    _ensure_market_info_loaded()
+def get_funding_rates(
+    symbol: str | None = None,
+    use_cache: bool = True,
+) -> Dict[str, Dict[str, Optional[Decimal]]]:
+    _ensure_market_info_loaded(force_refresh=not use_cache)
     symbols: Iterable[str]
     if symbol:
         symbol_upper = symbol.upper()
@@ -262,6 +299,44 @@ def _sign_and_post(path: str, action: str, payload: Dict[str, Any]) -> Dict[str,
     return response.json()
 
 
+def _ensure_account_action(
+    path: str,
+    action: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    response = _sign_and_post(path, action, payload)
+    if not response.get("success", True):
+        raise RuntimeError(f"{action} failed: {response}")
+    return response
+
+
+def _update_margin_mode(symbol: str, is_isolated: bool) -> None:
+    payload = {
+        "symbol": symbol.upper(),
+        "is_isolated": bool(is_isolated),
+    }
+    _ensure_account_action("/account/margin", "update_margin_mode", payload)
+
+
+def _update_leverage(symbol: str, leverage: int) -> None:
+    payload = {
+        "symbol": symbol.upper(),
+        "leverage": int(leverage),
+    }
+    _ensure_account_action("/account/leverage", "update_leverage", payload)
+
+
+def _ensure_margin_settings(symbol: str, *, leverage: int = 1, is_isolated: bool = True) -> None:
+    symbol_upper = symbol.upper()
+    target = (bool(is_isolated), int(leverage))
+    cached = _ACCOUNT_SETTINGS_CACHE.get(symbol_upper)
+    if cached == target:
+        return
+    _update_margin_mode(symbol_upper, target[0])
+    _update_leverage(symbol_upper, target[1])
+    _ACCOUNT_SETTINGS_CACHE[symbol_upper] = target
+
+
 def get_positions() -> Dict[str, Any]:
     response = requests.get(
         f"{REST}/positions",
@@ -290,6 +365,7 @@ def open_position(
     amount: Decimal | float | str,
     slippage_percent: float = 0.5,
 ) -> Dict[str, Any]:
+    _ensure_margin_settings(symbol, leverage=1, is_isolated=True)
     order_side = "bid" if side.lower() == "long" else "ask"
     amount_str = format_base_amount(symbol, amount)
     payload = {
@@ -309,6 +385,7 @@ def close_position(
     amount: Decimal | float | str,
     slippage_percent: float = 0.5,
 ) -> Dict[str, Any]:
+    _ensure_margin_settings(symbol, leverage=1, is_isolated=True)
     exit_side = "ask" if side.lower() == "long" else "bid"
     amount_str = format_base_amount(symbol, amount)
     payload = {

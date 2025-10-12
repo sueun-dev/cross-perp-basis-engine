@@ -20,6 +20,11 @@ def load_env(path: str | None = None) -> None:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
+        if line.startswith(("export ", "export\t")):
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            line = parts[1].strip()
         if "=" not in line:
             continue
         key, value = line.split("=", 1)

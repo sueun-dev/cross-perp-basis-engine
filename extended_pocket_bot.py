@@ -4,8 +4,10 @@ import asyncio
 import atexit
 import os
 import time
+import sys
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
+from pathlib import Path
 from typing import Any, Awaitable, Dict, Iterable, Optional, Tuple, TYPE_CHECKING, TypeVar, cast
 
 import requests
@@ -71,6 +73,30 @@ MAINNET_CONFIG_DATA = EndpointConfigData(
     collateral_asset_id="0x1",
     starknet_domain=StarknetDomainConfig(name="Perpetuals", version="v0", chain_id="SN_MAIN", revision="1"),
 )
+
+
+def _prepend_local_venv_site_packages() -> None:
+    """Ensure packages from the local virtualenv are importable even if the venv isn't activated."""
+    project_root = Path(__file__).resolve().parent
+    venv_root_candidates = [project_root / ".venv", project_root / "venv"]
+    added = False
+    for venv_root in venv_root_candidates:
+        if not venv_root.exists():
+            continue
+        for lib_dir_name in ("lib", "Lib"):
+            lib_dir = venv_root / lib_dir_name
+            if not lib_dir.is_dir():
+                continue
+            for site_dir in lib_dir.glob("python*/site-packages"):
+                site_path = str(site_dir)
+                if site_path not in sys.path:
+                    sys.path.insert(0, site_path)
+                    added = True
+    if added:
+        sys.path = list(dict.fromkeys(sys.path))
+
+
+_prepend_local_venv_site_packages()
 
 
 def _with_overrides(config: EndpointConfigData, *, api_base_url: str, stream_url: str) -> EndpointConfigData:
@@ -304,6 +330,16 @@ def _round_price(symbol: str, price: Decimal, rounding=ROUND_HALF_UP) -> Decimal
     if rounded <= 0:
         rounded = tick
     return rounded
+
+
+def round_base_amount(symbol: str, amount: Decimal | float | str, rounding=ROUND_CEILING) -> Decimal:
+    if isinstance(amount, Decimal):
+        amount_dec = amount
+    elif isinstance(amount, (int, float)):
+        amount_dec = Decimal(str(amount))
+    else:
+        amount_dec = Decimal(amount)
+    return _round_quantity(symbol, amount_dec, rounding=rounding)
 
 
 def _get_orderbook(symbol: str, use_cache: bool = True) -> Tuple[float, float]:
