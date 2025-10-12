@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import signal
 import sys
 import time
@@ -9,21 +8,22 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from config import (
+    ENTRY_THRESHOLD,
+    EXIT_THRESHOLD,
+    LOG_LEVEL,
+    FUNDING_REFRESH_INTERVAL,
+    MAX_ACTIVE_SYMBOLS,
+    MAX_TOTAL_USD,
+    MAX_USD_PER_SYMBOL,
+    POLL_INTERVAL,
+    TOP_OPP_LOG_COUNT,
+    TRADE_USD,
+    TAKE_PROFIT_THRESHOLD,
+)
 import extended_pocket_bot as extended
 import pacifica_pocket_bot as pacifica
 
-
-# ---- Configuration ----
-TRADE_USD = Decimal(os.environ.get("ARBITRAGE_TRADE_USD", "50"))
-ENTRY_THRESHOLD = Decimal(
-    os.environ.get("ARBITRAGE_MIN_CONTANGO", os.environ.get("ARBITRAGE_ENTRY_THRESHOLD", "0"))
-)
-EXIT_THRESHOLD = Decimal(os.environ.get("ARBITRAGE_EXIT_THRESHOLD", "0.01"))
-MAX_USD_PER_SYMBOL = Decimal(os.environ.get("ARBITRAGE_MAX_USD_PER_SYMBOL", "300"))
-MAX_ACTIVE_SYMBOLS = int(os.environ.get("ARBITRAGE_MAX_SYMBOLS", "3"))
-POLL_INTERVAL = float(os.environ.get("ARBITRAGE_POLL_INTERVAL", "10"))
-LOG_LEVEL = os.environ.get("ARBITRAGE_LOG_LEVEL", "INFO").upper()
-TOP_OPP_LOG_COUNT = int(os.environ.get("ARBITRAGE_TOP_OPP_LOG_COUNT", "5"))
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -31,6 +31,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 LOGGER = logging.getLogger("main")
+
+_LAST_FUNDING_REFRESH: Optional[float] = None
+_EXTENDED_FUNDING_CACHE: Optional[Dict[str, Dict[str, Optional[Decimal]]]] = None
+_PACIFICA_FUNDING_CACHE: Optional[Dict[str, Dict[str, Optional[Decimal]]]] = None
 
 
 @dataclass
@@ -40,6 +44,7 @@ class Leg:
     extended_side: str
     extended_amount: float
     usd_size: Decimal
+    entry_ratio: Decimal
 
 
 @dataclass
@@ -98,9 +103,29 @@ def fetch_market_data() -> Tuple[
     Dict[str, Optional[Decimal]],
 ]:
     extended_quotes_raw = extended.list_market_quotes(use_cache=False)
-    extended_funding_raw = extended.get_funding_rates(use_cache=True)
+    global _LAST_FUNDING_REFRESH, _EXTENDED_FUNDING_CACHE, _PACIFICA_FUNDING_CACHE
+
+    now = time.time()
+    refresh_needed = (
+        _EXTENDED_FUNDING_CACHE is None
+        or _PACIFICA_FUNDING_CACHE is None
+        or _LAST_FUNDING_REFRESH is None
+        or (now - _LAST_FUNDING_REFRESH) >= FUNDING_REFRESH_INTERVAL
+    )
+
+    if refresh_needed:
+        extended_funding_raw = extended.get_funding_rates(use_cache=False)
+        pacifica_funding_raw = pacifica.get_funding_rates(use_cache=False)
+        _EXTENDED_FUNDING_CACHE = extended_funding_raw
+        _PACIFICA_FUNDING_CACHE = pacifica_funding_raw
+        _LAST_FUNDING_REFRESH = now
+    else:
+        extended_funding_raw = _EXTENDED_FUNDING_CACHE
+        pacifica_funding_raw = _PACIFICA_FUNDING_CACHE
+
+    assert extended_funding_raw is not None
+    assert pacifica_funding_raw is not None
     pacifica_quotes_raw = pacifica.list_market_quotes()
-    pacifica_funding_raw = pacifica.get_funding_rates()
 
     extended_quotes: Dict[str, Tuple[str, Dict[str, Optional[float]]]] = {}
     for ext_symbol, payload in extended_quotes_raw.items():
@@ -234,19 +259,78 @@ def _compute_trade_leg(opportunity: Opportunity, usd_notional: Decimal) -> Optio
         extended_price = opportunity.buy_price
         pacifica_side = "short"
         pacifica_price = opportunity.sell_price
+    pac_price_dec = Decimal(str(pacifica_price))
+    ext_price_dec = Decimal(str(extended_price))
 
-    pac_amount = pacifica.usd_to_base(opportunity.base_symbol, usd, price=pacifica_price)
-    ext_amount = extended.usd_to_base(opportunity.extended_symbol, usd, price=extended_price)
-
-    if pac_amount <= 0 or ext_amount <= 0:
+    if pac_price_dec <= 0 or ext_price_dec <= 0:
         return None
+
+    target_usd = Decimal(usd_notional)
+    if target_usd <= 0:
+        return None
+
+    if opportunity.high_exchange == "extended":
+        # Long Pacifica (buy), short Extended (sell)
+        buy_price_dec = pac_price_dec
+        sell_price_dec = ext_price_dec
+
+        def _round_buy(amount: Decimal) -> Decimal:
+            return pacifica.round_base_amount(opportunity.base_symbol, amount, price=buy_price_dec)
+
+        def _round_sell(amount: Decimal) -> Decimal:
+            return extended.round_base_amount(opportunity.extended_symbol, amount)
+    else:
+        # Long Extended (buy), short Pacifica (sell)
+        buy_price_dec = ext_price_dec
+        sell_price_dec = pac_price_dec
+
+        def _round_buy(amount: Decimal) -> Decimal:
+            return extended.round_base_amount(opportunity.extended_symbol, amount)
+
+        def _round_sell(amount: Decimal) -> Decimal:
+            return pacifica.round_base_amount(opportunity.base_symbol, amount, price=sell_price_dec)
+
+    # Initial guesses based on desired USD notional
+    buy_base_estimate = Decimal(str(usd_notional)) / buy_price_dec
+    sell_base_estimate = Decimal(str(usd_notional)) / sell_price_dec
+    base_target = max(buy_base_estimate, sell_base_estimate)
+
+    for _ in range(8):
+        if base_target <= 0:
+            return None
+        buy_base = _round_buy(base_target)
+        sell_base = _round_sell(base_target)
+        new_target = max(buy_base, sell_base)
+        if new_target == base_target:
+            break
+        base_target = new_target
+    else:
+        buy_base = _round_buy(base_target)
+        sell_base = _round_sell(base_target)
+
+    if buy_base <= 0 or sell_base <= 0:
+        return None
+
+    pac_amount_dec: Decimal
+    ext_amount_dec: Decimal
+    if opportunity.high_exchange == "extended":
+        pac_amount_dec = buy_base
+        ext_amount_dec = sell_base
+    else:
+        pac_amount_dec = sell_base
+        ext_amount_dec = buy_base
+
+    pac_usd = pac_amount_dec * pac_price_dec
+    ext_usd = ext_amount_dec * ext_price_dec
+    actual_usd = max(pac_usd, ext_usd)
 
     return Leg(
         pacifica_side=pacifica_side,
-        pacifica_amount=pac_amount,
+        pacifica_amount=pac_amount_dec,
         extended_side=extended_side,
-        extended_amount=ext_amount,
-        usd_size=usd_notional,
+        extended_amount=float(ext_amount_dec),
+        usd_size=actual_usd,
+        entry_ratio=opportunity.ratio,
     )
 
 
@@ -259,8 +343,25 @@ def execute_open_leg(symbol: str, extended_symbol: str, leg: Leg) -> None:
         leg.extended_side,
         leg.extended_amount,
     )
-    pacifica.open_position(symbol, leg.pacifica_side, leg.pacifica_amount)
-    extended.open_position(extended_symbol, leg.extended_side, leg.extended_amount)
+    pacifica_opened = False
+    try:
+        pacifica.open_position(symbol, leg.pacifica_side, leg.pacifica_amount)
+        pacifica_opened = True
+        extended.open_position(extended_symbol, leg.extended_side, leg.extended_amount)
+    except Exception as exc:
+        if pacifica_opened:
+            LOGGER.warning(
+                "Extended leg failed for %s; attempting to roll back Pacifica position (%s)",
+                symbol,
+                exc,
+            )
+            try:
+                pacifica.close_position(symbol, leg.pacifica_side, leg.pacifica_amount)
+            except Exception as rollback_exc:
+                LOGGER.error(
+                    "Rollback of Pacifica position for %s failed: %s", symbol, rollback_exc
+                )
+        raise
 
 
 def execute_close_leg(symbol: str, extended_symbol: str, leg: Leg) -> None:
@@ -272,8 +373,27 @@ def execute_close_leg(symbol: str, extended_symbol: str, leg: Leg) -> None:
         leg.extended_side,
         leg.extended_amount,
     )
-    pacifica.close_position(symbol, leg.pacifica_side, leg.pacifica_amount)
-    extended.close_position(extended_symbol, leg.extended_side, leg.extended_amount)
+    pacifica_closed = False
+    try:
+        pacifica.close_position(symbol, leg.pacifica_side, leg.pacifica_amount)
+        pacifica_closed = True
+        extended.close_position(extended_symbol, leg.extended_side, leg.extended_amount)
+    except Exception as exc:
+        if pacifica_closed:
+            LOGGER.warning(
+                "Extended close failed for %s; attempting to restore Pacifica position (%s)",
+                symbol,
+                exc,
+            )
+            try:
+                pacifica.open_position(symbol, leg.pacifica_side, leg.pacifica_amount)
+            except Exception as reopen_exc:
+                LOGGER.error(
+                    "Failed to restore Pacifica position for %s after close error: %s",
+                    symbol,
+                    reopen_exc,
+                )
+        raise
 
 
 def close_all_legs(exposure: SymbolExposure) -> None:
@@ -296,121 +416,169 @@ def active_symbols(exposures: Dict[str, SymbolExposure]) -> Iterable[str]:
             yield symbol
 
 
+def total_exposure_usd(exposures: Dict[str, SymbolExposure]) -> Decimal:
+    total = Decimal("0")
+    for exposure in exposures.values():
+        total += exposure.total_usd
+    return total
+
+
 def run() -> None:
     exposures: Dict[str, SymbolExposure] = {}
     stop_requested = False
 
     def _handle_stop(signum: int, _frame: object) -> None:
         nonlocal stop_requested
-        LOGGER.info("Received signal %s, preparing to exit...", signum)
+        if not stop_requested:
+            LOGGER.info("Received signal %s, preparing to exit...", signum)
         stop_requested = True
 
-    signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 
-    while not stop_requested:
-        try:
-            (
-                extended_quotes,
-                pacifica_quotes,
-                extended_funding,
-                pacifica_funding,
-            ) = fetch_market_data()
-            opportunities = evaluate_opportunities(extended_quotes, pacifica_quotes)
-            sorted_opportunities = sorted(
-                opportunities.values(), key=lambda opp: opp.ratio, reverse=True
-            )
-
-            if sorted_opportunities and LOGGER.isEnabledFor(logging.INFO):
-                positive_slice = [opp for opp in sorted_opportunities if opp.ratio > 0]
-                log_slice = positive_slice[:TOP_OPP_LOG_COUNT]
-                LOGGER.info(
-                    "Top spreads: %s",
-                    ", ".join(
-                        f"{opp.base_symbol}:{(opp.ratio * 100):.2f}%" for opp in log_slice
-                    ),
-                )
-
-            # First unwind exposures that lost their edge or flipped direction.
-            for symbol in list(exposures.keys()):
-                exposure = exposures[symbol]
-                opp = opportunities.get(symbol)
-                if not exposure.legs:
-                    exposures.pop(symbol, None)
-                    continue
-                if opp is None or opp.high_exchange != exposure.direction[0] or opp.low_exchange != exposure.direction[1]:
-                    close_all_legs(exposure)
-                    if not exposure.legs:
-                        exposures.pop(symbol, None)
-                    continue
-                net_funding = compute_net_funding(
-                    symbol,
-                    exposure.direction[0],
-                    exposure.direction[1],
-                    pacifica_funding,
+    try:
+        while not stop_requested:
+            try:
+                (
+                    extended_quotes,
+                    pacifica_quotes,
                     extended_funding,
+                    pacifica_funding,
+                ) = fetch_market_data() # Done
+                opportunities = evaluate_opportunities(extended_quotes, pacifica_quotes)
+                sorted_opportunities = sorted(
+                    opportunities.values(), key=lambda opp: opp.ratio, reverse=True
                 )
-                if net_funding is not None and net_funding < Decimal("0"):
-                    LOGGER.info(
-                        "Funding turned unfavorable for %s (net %.8f); closing positions",
-                        symbol,
-                        float(net_funding),
-                    )
-                    close_all_legs(exposure)
-                    if not exposure.legs:
-                        exposures.pop(symbol, None)
-                    continue
-                if opp.ratio < EXIT_THRESHOLD:
-                    LOGGER.info(
-                        "Contango for %s dropped to %.4f (< exit %.4f); closing positions",
-                        symbol,
-                        float(opp.ratio),
-                        float(EXIT_THRESHOLD),
-                    )
-                    close_all_legs(exposure)
-                    if not exposure.legs:
-                        exposures.pop(symbol, None)
 
-            # Evaluate potential new entries.
-            for opportunity in sorted_opportunities:
-                symbol = opportunity.base_symbol
-                if opportunity.ratio <= ENTRY_THRESHOLD:
-                    continue
-                if not funding_is_favorable(opportunity, pacifica_funding, extended_funding):
-                    continue
-                exposure = exposures.get(symbol)
-                if exposure is None:
-                    if len(list(active_symbols(exposures))) >= MAX_ACTIVE_SYMBOLS:
+                if sorted_opportunities and LOGGER.isEnabledFor(logging.INFO):
+                    positive_slice = [opp for opp in sorted_opportunities if opp.ratio > 0]
+                    log_slice = positive_slice[:TOP_OPP_LOG_COUNT]
+                    LOGGER.info(
+                        "Top spreads: %s",
+                        ", ".join(
+                            f"{opp.base_symbol}:{(opp.ratio * 100):.2f}%" for opp in log_slice
+                        ),
+                    )
+
+                # First unwind exposures that lost their edge or flipped direction.
+                for symbol in list(exposures.keys()):
+                    exposure = exposures[symbol]
+                    opp = opportunities.get(symbol)
+                    if not exposure.legs:
+                        exposures.pop(symbol, None)
                         continue
-                    exposure = SymbolExposure(
-                        base_symbol=symbol,
-                        extended_symbol=opportunity.extended_symbol,
-                        direction=(opportunity.high_exchange, opportunity.low_exchange),
+                    if opp is None or opp.high_exchange != exposure.direction[0] or opp.low_exchange != exposure.direction[1]:
+                        close_all_legs(exposure)
+                        if not exposure.legs:
+                            exposures.pop(symbol, None)
+                        continue
+                    net_funding = compute_net_funding(
+                        symbol,
+                        exposure.direction[0],
+                        exposure.direction[1],
+                        pacifica_funding,
+                        extended_funding,
                     )
-                    exposures[symbol] = exposure
-                if exposure.direction != (opportunity.high_exchange, opportunity.low_exchange):
-                    continue
-                remaining = MAX_USD_PER_SYMBOL - exposure.total_usd
-                if remaining < TRADE_USD:
-                    continue
-                leg = _compute_trade_leg(opportunity, TRADE_USD)
-                if leg is None:
-                    continue
-                try:
-                    execute_open_leg(symbol, exposure.extended_symbol, leg)
-                    exposure.append_leg(leg)
-                except Exception as exc:
-                    LOGGER.exception("Failed to open hedge for %s: %s", symbol, exc)
-                    continue
+                    if net_funding is not None and net_funding < Decimal("0"):
+                        LOGGER.info(
+                            "Funding turned unfavorable for %s (net %.8f); closing positions",
+                            symbol,
+                            float(net_funding),
+                        )
+                        close_all_legs(exposure)
+                        if not exposure.legs:
+                            exposures.pop(symbol, None)
+                        continue
+                    if opp is not None:
+                        profit_reached = any(
+                            (leg.entry_ratio - opp.ratio) >= TAKE_PROFIT_THRESHOLD for leg in exposure.legs
+                        )
+                        if profit_reached:
+                            first_leg = exposure.legs[0]
+                            LOGGER.info(
+                                "Take-profit reached for %s: entry %.4f -> current %.4f (>= %.4f)",
+                                symbol,
+                                float(first_leg.entry_ratio),
+                                float(opp.ratio),
+                                float(TAKE_PROFIT_THRESHOLD),
+                            )
+                            close_all_legs(exposure)
+                            if not exposure.legs:
+                                exposures.pop(symbol, None)
+                            continue
+                    if opp.ratio < EXIT_THRESHOLD:
+                        LOGGER.info(
+                            "Contango for %s dropped to %.4f (< exit %.4f); closing positions",
+                            symbol,
+                            float(opp.ratio),
+                            float(EXIT_THRESHOLD),
+                        )
+                        close_all_legs(exposure)
+                        if not exposure.legs:
+                            exposures.pop(symbol, None)
+                        continue
 
-            time.sleep(POLL_INTERVAL)
-        except Exception as exc:
-            LOGGER.exception("Arbitrage loop error: %s", exc)
-            time.sleep(POLL_INTERVAL)
+                # Evaluate potential new entries.
+                for opportunity in sorted_opportunities:
+                    symbol = opportunity.base_symbol
+                    if opportunity.ratio <= ENTRY_THRESHOLD:
+                        continue
+                    if not funding_is_favorable(opportunity, pacifica_funding, extended_funding):
+                        continue
+                    exposure = exposures.get(symbol)
+                    if exposure is None:
+                        if len(list(active_symbols(exposures))) >= MAX_ACTIVE_SYMBOLS:
+                            continue
+                        exposure = SymbolExposure(
+                            base_symbol=symbol,
+                            extended_symbol=opportunity.extended_symbol,
+                            direction=(opportunity.high_exchange, opportunity.low_exchange),
+                        )
+                        exposures[symbol] = exposure
+                    if exposure.direction != (opportunity.high_exchange, opportunity.low_exchange):
+                        continue
+                    remaining = MAX_USD_PER_SYMBOL - exposure.total_usd
+                    if remaining <= Decimal("0"):
+                        continue
+                    leg = _compute_trade_leg(opportunity, TRADE_USD)
+                    if leg is None:
+                        continue
+                    if leg.usd_size > remaining:
+                        LOGGER.debug(
+                            "Skipping %s: rounded notional %.2f exceeds remaining per-symbol cap %.2f",
+                            symbol,
+                            float(leg.usd_size),
+                            float(remaining),
+                        )
+                        continue
+                    projected_total = total_exposure_usd(exposures) + leg.usd_size
+                    if projected_total > MAX_TOTAL_USD:
+                        LOGGER.debug(
+                            "Skipping %s: rounded notional pushes total exposure to %.2f (> %.2f)",
+                            symbol,
+                            float(projected_total),
+                            float(MAX_TOTAL_USD),
+                        )
+                        continue
+                    try:
+                        execute_open_leg(symbol, exposure.extended_symbol, leg)
+                        exposure.append_leg(leg)
+                    except Exception as exc:
+                        LOGGER.exception("Failed to open hedge for %s: %s", symbol, exc)
+                        continue
 
-    LOGGER.info("Stopping arbitrage loop, closing all open positions...")
-    for exposure in list(exposures.values()):
-        close_all_legs(exposure)
+                if not stop_requested:
+                    time.sleep(POLL_INTERVAL)
+            except Exception as exc:
+                LOGGER.exception("Arbitrage loop error: %s", exc)
+                if not stop_requested:
+                    time.sleep(POLL_INTERVAL)
+    except KeyboardInterrupt:
+        LOGGER.info("Keyboard interrupt received, stopping trading loop...")
+        stop_requested = True
+    finally:
+        LOGGER.info("Stopping arbitrage loop, closing all open positions...")
+        for exposure in list(exposures.values()):
+            close_all_legs(exposure)
 
 
 if __name__ == "__main__":
