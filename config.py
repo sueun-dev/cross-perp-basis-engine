@@ -1,25 +1,31 @@
 from __future__ import annotations
 
-import os
+
 from decimal import Decimal
 
-from env_loader import load_env
+# ---- Trading configuration ---------------------------------------------------
+# 이 파일에서 숫자들을 직접 수정하면 됩니다.
+# 단위:
+#   - 퍼센트 값들은 소수 (예: 0.01 = 1%)
+#   - USD 관련 값들은 Decimal
 
-load_env()
+# 한 번에 체결할 USD 기준 노출
+TRADE_USD = Decimal("20")
 
+# 진입/청산 임계값 (스프레드 비율)
+ENTRY_THRESHOLD = Decimal("0.007")       # 0.7% 이상 컨탱고일 때 진입
+EXIT_THRESHOLD = Decimal("0.001")        # 스프레드가 0.1% 미만으로 줄면 손절
+TAKE_PROFIT_THRESHOLD = Decimal("0.01")  # 진입 대비 1% 이상 좁혀질 때 take-profit
 
-TRADE_USD = Decimal(os.environ.get("ARBITRAGE_TRADE_USD", "20"))
-ENTRY_THRESHOLD = Decimal(
-    os.environ.get("ARBITRAGE_MIN_CONTANGO", os.environ.get("ARBITRAGE_ENTRY_THRESHOLD", "0"))
-)
-EXIT_THRESHOLD = Decimal(os.environ.get("ARBITRAGE_EXIT_THRESHOLD", "0.01"))
-MAX_USD_PER_SYMBOL = Decimal(os.environ.get("ARBITRAGE_MAX_USD_PER_SYMBOL", "250"))
-MAX_ACTIVE_SYMBOLS = int(os.environ.get("ARBITRAGE_MAX_SYMBOLS", "3"))
-POLL_INTERVAL = float(os.environ.get("ARBITRAGE_POLL_INTERVAL", "10"))
-LOG_LEVEL = os.environ.get("ARBITRAGE_LOG_LEVEL", "INFO").upper()
-TOP_OPP_LOG_COUNT = int(os.environ.get("ARBITRAGE_TOP_OPP_LOG_COUNT", "5"))
-FUNDING_REFRESH_INTERVAL = float(os.environ.get("ARBITRAGE_FUNDING_REFRESH_SECONDS", "3600"))
-MAX_TOTAL_USD = Decimal(os.environ.get("ARBITRAGE_MAX_TOTAL_USD", "250"))
-TAKE_PROFIT_THRESHOLD = Decimal(
-    os.environ.get("ARBITRAGE_TAKE_PROFIT", os.environ.get("ARBITRAGE_ENTRY_THRESHOLD", "0.01"))
-)
+# 노출 및 포지션 제약
+MAX_USD_PER_SYMBOL = Decimal("250")
+MAX_TOTAL_USD = Decimal("250")
+MAX_ACTIVE_SYMBOLS = 3
+
+# 루프 주기 및 로그 설정
+POLL_INTERVAL = 10.0  # 초
+LOG_LEVEL = "INFO"
+TOP_OPP_LOG_COUNT = 5
+
+# 펀딩 데이터 새로고침 (초)
+FUNDING_REFRESH_INTERVAL = 3600.0

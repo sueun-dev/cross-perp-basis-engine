@@ -151,7 +151,10 @@ def round_base_amount(
 
 def _lot_decimals(symbol: str) -> int:
     lot_size = _get_lot_size(symbol)
-    return abs(lot_size.as_tuple().exponent)
+    exponent = lot_size.as_tuple().exponent
+    if isinstance(exponent, str):
+        raise ValueError(f"Unexpected exponent {exponent!r} for lot size on {symbol}")
+    return abs(exponent)
 
 
 def list_symbols() -> Iterable[str]:
