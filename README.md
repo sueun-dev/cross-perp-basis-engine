@@ -49,6 +49,7 @@ CI/CD나 서버에서 실행할 때는 위와 같이 `export`를 사용하거나
 - 거래소별 수량 반올림 규칙이나 롤백 로직을 바꾸려면 `trade_operations.py`를 수정합니다.
 - 펀딩 검증에 추가 조건을 붙이고 싶다면 `opportunity_analysis.py`를 확장하세요.
 - 로그 포맷이나 레벨은 `app_logging.py`에서 손쉽게 변경할 수 있습니다.
+- 기본값 기준으로 컨탱고가 약 1%p 좁혀지면(현재 `TAKE_PROFIT_THRESHOLD = Decimal("0.01")`) 자동으로 포지션을 청산해 대략 1% 수익률을 실현합니다.
 
 ### 문제 해결 가이드
 - **포지션이 열리지 않을 때**: `MAX_TOTAL_USD`, `MAX_USD_PER_SYMBOL`, 펀딩 조건이 허용되는지 확인하고 INFO 로그의 건너뛴 사유를 참고하세요.
@@ -106,6 +107,7 @@ For CI/CD or servers, export environment variables as shown or load a `.env` fil
 - Update rounding rules or rollback handling in `trade_operations.py` if exchange specs change.
 - Extend funding or spread filters in `opportunity_analysis.py`.
 - Change logging format/level directly in `app_logging.py`.
+- With the defaults, once contango compresses by roughly 1 percentage point (`TAKE_PROFIT_THRESHOLD = Decimal("0.01")`), the bot auto-closes the hedge to lock in about a 1% gain.
 
 ### Troubleshooting
 - **No trades opening:** Confirm `MAX_TOTAL_USD`, per-symbol limits, and funding favourability; INFO logs explain skip reasons.
