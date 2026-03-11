@@ -1,4 +1,6 @@
-# perp-dex-contango-bot
+# Cross Perp Basis Engine
+
+Delta-neutral perpetual basis engine for cross-venue contango capture and funding-aware hedge management.
 
 ## 한국어 안내
 
