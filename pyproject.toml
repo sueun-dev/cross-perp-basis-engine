@@ -1,0 +1,36 @@
+# Tooling configuration for the cross-perp basis engine.
+#
+# Runtime/test dependencies live in requirements*.txt; this file only configures
+# the static-analysis tools (ruff, pyright) so they run cleanly against the code
+# we actually own. The vendored Pacifica SDK and the optional X10 trading SDK are
+# third-party and are scoped out of our quality gates below.
+
+[tool.ruff]
+# `pacifica_python_sdk` is a vendored copy of Pacifica's official API examples
+# (see pacifica_python_sdk/README.md); we do not own or maintain that code.
+extend-exclude = ["pacifica_python_sdk", ".venv"]
+
+[tool.pyright]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    # Vendored third-party SDK; linted/typed upstream, not by us.
+    "pacifica_python_sdk",
+]
+# The X10 trading SDK (x10.perpetual.*) is an optional dependency that the code
+# imports lazily and guards with try/except ImportError, degrading to
+# market-data-only mode when it is absent or version-shifted. Pyright cannot
+# resolve those optional imports, so the resolution diagnostics are downgraded
+# rather than masking real type errors elsewhere.
+reportMissingImports = "none"
+reportPrivateImportUsage = "none"
+
+# Unit tests install lightweight stand-ins for the exchange clients directly into
+# sys.modules (see tests/conftest.py). Assigning attributes onto those ModuleType
+# stubs is an intentional pattern, so the related diagnostics are relaxed for the
+# tests package only.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportAttributeAccessIssue = "none"
+reportInvalidTypeForm = "none"
+reportRedeclaration = "none"

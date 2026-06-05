@@ -4,6 +4,11 @@ __pycache__/
 
 # Environment & secrets
 .env
+.venv/
+venv/
+
+# Tooling caches
+.ruff_cache/
 
 # Editors
 .vscode/

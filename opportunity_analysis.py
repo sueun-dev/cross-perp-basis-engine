@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from models import Opportunity
 
@@ -11,8 +11,8 @@ LOGGER = logging.getLogger("main")
 
 
 def evaluate_opportunities(
-    extended_quotes: Dict[str, Tuple[str, Dict[str, Optional[float]]]],
-    pacifica_quotes: Dict[str, Dict[str, Optional[float]]],
+    extended_quotes: Mapping[str, Tuple[str, Mapping[str, Optional[float]]]],
+    pacifica_quotes: Mapping[str, Mapping[str, Optional[float]]],
 ) -> Dict[str, Opportunity]:
     opportunities: Dict[str, Opportunity] = {}
     for base_symbol, (extended_symbol, ext_payload) in extended_quotes.items():

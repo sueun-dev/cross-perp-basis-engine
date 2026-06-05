@@ -14,7 +14,6 @@ LOGGER = logging.getLogger("main")
 
 
 def compute_trade_leg(opportunity: Opportunity, usd_notional: Decimal) -> Optional[Leg]:
-    usd = float(usd_notional)
     if opportunity.high_exchange == "extended":
         extended_side = "short"
         extended_price = opportunity.sell_price
@@ -31,8 +30,7 @@ def compute_trade_leg(opportunity: Opportunity, usd_notional: Decimal) -> Option
     if pac_price_dec <= 0 or ext_price_dec <= 0:
         return None
 
-    target_usd = Decimal(usd_notional)
-    if target_usd <= 0:
+    if usd_notional <= 0:
         return None
 
     if opportunity.high_exchange == "extended":
@@ -57,8 +55,8 @@ def compute_trade_leg(opportunity: Opportunity, usd_notional: Decimal) -> Option
             return pacifica.round_base_amount(opportunity.base_symbol, amount, price=sell_price_dec)
 
     # Initial guesses based on desired USD notional
-    buy_base_estimate = Decimal(str(usd_notional)) / buy_price_dec
-    sell_base_estimate = Decimal(str(usd_notional)) / sell_price_dec
+    buy_base_estimate = usd_notional / buy_price_dec
+    sell_base_estimate = usd_notional / sell_price_dec
     base_target = max(buy_base_estimate, sell_base_estimate)
 
     for _ in range(8):

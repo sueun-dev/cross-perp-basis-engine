@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 
+from models import Opportunity
 from opportunity_analysis import (
     compute_net_funding,
     evaluate_opportunities,
@@ -84,23 +85,28 @@ def test_compute_net_funding_missing_returns_none():
     assert compute_net_funding("BTC", "extended", "pacifica", {}, {"BTC": Decimal("0")}) is None
 
 
-class _Opp:
-    def __init__(self):
-        self.base_symbol = "BTC"
-        self.high_exchange = "extended"
-        self.low_exchange = "pacifica"
+def _opp() -> Opportunity:
+    return Opportunity(
+        base_symbol="BTC",
+        extended_symbol="BTC-USD",
+        high_exchange="extended",
+        low_exchange="pacifica",
+        sell_price=101.0,
+        buy_price=100.0,
+        ratio=Decimal("0.01"),
+    )
 
 
 def test_funding_is_favorable_true_when_net_positive():
-    opp = _Opp()
+    opp = _opp()
     assert funding_is_favorable(opp, {"BTC": Decimal("0")}, {"BTC": Decimal("0.001")}) is True
 
 
 def test_funding_is_favorable_false_when_net_negative():
-    opp = _Opp()
+    opp = _opp()
     assert funding_is_favorable(opp, {"BTC": Decimal("0.002")}, {"BTC": Decimal("0.001")}) is False
 
 
 def test_funding_is_favorable_false_when_missing():
-    opp = _Opp()
+    opp = _opp()
     assert funding_is_favorable(opp, {}, {}) is False
