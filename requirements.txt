@@ -1,0 +1,15 @@
+# Runtime dependencies for the cross-perp basis engine.
+#
+# The Pacifica venue uses the vendored SDK in ./pacifica_python_sdk, which needs
+# requests, solders and base58. The Extended (X10) venue needs the x10 Starknet
+# trading SDK, installed from git (no PyPI release at time of writing).
+
+requests>=2.31.0
+solders>=0.19.0
+base58>=2.1.1
+
+# Extended / X10 perpetual trading SDK. Required for live order placement on
+# Extended; market-data and analysis modules import lazily and degrade with a
+# clear error if it is absent.
+#   pip install "git+https://github.com/x10xchange/python_sdk.git#egg=x10-python-trading-starknet"
+x10-python-trading-starknet @ git+https://github.com/x10xchange/python_sdk.git

@@ -26,7 +26,7 @@ def evaluate_opportunities(
 
         candidates: List[Opportunity] = []
         if ext_bid and pac_ask and pac_ask > 0:
-            ratio = Decimal(ext_bid / pac_ask - 1)
+            ratio = Decimal(str(ext_bid)) / Decimal(str(pac_ask)) - Decimal(1)
             candidates.append(
                 Opportunity(
                     base_symbol=base_symbol,
@@ -39,7 +39,7 @@ def evaluate_opportunities(
                 )
             )
         if pac_bid and ext_ask and ext_ask > 0:
-            ratio = Decimal(pac_bid / ext_ask - 1)
+            ratio = Decimal(str(pac_bid)) / Decimal(str(ext_ask)) - Decimal(1)
             candidates.append(
                 Opportunity(
                     base_symbol=base_symbol,

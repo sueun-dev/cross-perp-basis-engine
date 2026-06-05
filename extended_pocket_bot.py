@@ -182,10 +182,7 @@ def _require_order_side_enum() -> OrderSideType:
 def _api_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     url = f"{REST}{path}"
     response = SESSION.get(url, params=params, headers=HEADERS, timeout=10)
-    try:
-        response.raise_for_status()
-    except HTTPError as exc:
-        raise
+    response.raise_for_status()
     payload = response.json()
     status = payload.get("status")
     if isinstance(status, str) and status.upper() == "ERROR":
