@@ -52,6 +52,15 @@ def _log_top_spreads(sorted_opportunities: List[Opportunity]) -> None:
     )
 
 
+def _close_and_drop_if_empty(
+    exposures: Dict[str, SymbolExposure], symbol: str, exposure: SymbolExposure
+) -> None:
+    """Unwind every leg of an exposure and forget the symbol once it is flat."""
+    close_all_legs(exposure)
+    if not exposure.legs:
+        exposures.pop(symbol, None)
+
+
 def _unwind_stale_exposures(
     exposures: Dict[str, SymbolExposure],
     opportunities: Dict[str, Opportunity],
@@ -71,9 +80,7 @@ def _unwind_stale_exposures(
             or opp.high_exchange != exposure.direction[0]
             or opp.low_exchange != exposure.direction[1]
         ):
-            close_all_legs(exposure)
-            if not exposure.legs:
-                exposures.pop(symbol, None)
+            _close_and_drop_if_empty(exposures, symbol, exposure)
             continue
         net_funding = compute_net_funding(
             symbol,
@@ -88,9 +95,7 @@ def _unwind_stale_exposures(
                 symbol,
                 float(net_funding),
             )
-            close_all_legs(exposure)
-            if not exposure.legs:
-                exposures.pop(symbol, None)
+            _close_and_drop_if_empty(exposures, symbol, exposure)
             continue
         profit_reached = any(
             (leg.entry_ratio - opp.ratio) >= TAKE_PROFIT_THRESHOLD for leg in exposure.legs
@@ -104,9 +109,7 @@ def _unwind_stale_exposures(
                 float(opp.ratio),
                 float(TAKE_PROFIT_THRESHOLD),
             )
-            close_all_legs(exposure)
-            if not exposure.legs:
-                exposures.pop(symbol, None)
+            _close_and_drop_if_empty(exposures, symbol, exposure)
             continue
         if opp.ratio < EXIT_THRESHOLD:
             LOGGER.info(
@@ -115,9 +118,7 @@ def _unwind_stale_exposures(
                 float(opp.ratio),
                 float(EXIT_THRESHOLD),
             )
-            close_all_legs(exposure)
-            if not exposure.legs:
-                exposures.pop(symbol, None)
+            _close_and_drop_if_empty(exposures, symbol, exposure)
 
 
 def _evaluate_entries(
@@ -135,9 +136,9 @@ def _evaluate_entries(
             continue
 
         direction = (opportunity.high_exchange, opportunity.low_exchange)
-        exposure = exposures.get(symbol)
-        is_new = exposure is None
-        if is_new:
+        existing = exposures.get(symbol)
+        is_new = existing is None
+        if existing is None:
             if len(list(active_symbols(exposures))) >= MAX_ACTIVE_SYMBOLS:
                 continue
             exposure = SymbolExposure(
@@ -145,8 +146,10 @@ def _evaluate_entries(
                 extended_symbol=opportunity.extended_symbol,
                 direction=direction,
             )
-        elif exposure.direction != direction:
-            continue
+        else:
+            if existing.direction != direction:
+                continue
+            exposure = existing
         # Past this point `exposure` is always present: it was either fetched
         # from the map or freshly constructed above (the only other branch
         # continues), so the bookkeeping below operates on a real exposure.

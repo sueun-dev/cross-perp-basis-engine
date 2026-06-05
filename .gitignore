@@ -9,6 +9,11 @@ venv/
 
 # Environment & secrets
 .env
+.venv/
+venv/
+
+# Tooling caches
+.ruff_cache/
 
 # Editors
 .vscode/
