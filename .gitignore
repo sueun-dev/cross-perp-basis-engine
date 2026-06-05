@@ -1,6 +1,11 @@
 # Python artifacts
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Virtualenvs
+.venv/
+venv/
 
 # Environment & secrets
 .env
