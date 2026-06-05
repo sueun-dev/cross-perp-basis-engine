@@ -26,10 +26,12 @@ from opportunity_analysis import (
     funding_is_favorable,
 )
 from trade_operations import (
+    OrphanedLegError,
     active_symbols,
     close_all_legs,
     compute_trade_leg,
     execute_open_leg,
+    reconcile_orphan,
     total_exposure_usd,
 )
 
@@ -148,6 +150,10 @@ def _evaluate_entries(
             if existing.direction != direction:
                 continue
             exposure = existing
+        # Past this point `exposure` is always present: it was either fetched
+        # from the map or freshly constructed above (the only other branch
+        # continues), so the bookkeeping below operates on a real exposure.
+        assert exposure is not None
 
         remaining = MAX_USD_PER_SYMBOL - exposure.total_usd
         if remaining <= Decimal("0"):
@@ -175,6 +181,21 @@ def _evaluate_entries(
 
         try:
             execute_open_leg(symbol, exposure.extended_symbol, leg)
+        except OrphanedLegError as exc:
+            # A leg filled on Pacifica but the hedge failed AND the rollback
+            # failed: there is now a live, UN-hedged position. Never drop it.
+            # Record the orphaned leg so it is tracked and counted against risk
+            # caps, register the exposure, and let the next cycle force-unwind
+            # it via reconciliation against actual venue positions.
+            LOGGER.error(
+                "Naked Pacifica position left open for %s after failed hedge+rollback; "
+                "recording orphaned leg for forced unwind: %s",
+                symbol,
+                exc,
+            )
+            exposure.append_leg(exc.leg)
+            exposures[symbol] = exposure
+            continue
         except Exception as exc:  # noqa: BLE001 - keep the loop alive on a single bad order
             LOGGER.exception("Failed to open hedge leg for %s: %s", symbol, exc)
             continue
@@ -186,10 +207,38 @@ def _evaluate_entries(
             exposures[symbol] = exposure
 
 
+def _reconcile_orphans(exposures: Dict[str, SymbolExposure]) -> None:
+    """Force-flatten any orphaned legs against live venue positions.
+
+    An orphaned leg means the two venues are known to be out of sync (a hedge
+    whose rollback failed, or an unwind whose re-open failed). Until it is
+    reconciled it is NOT a clean delta-neutral hedge, so resolve it before doing
+    anything else. A leg confirmed flat on both venues is dropped; one that is
+    still live (or unverifiable) is kept for the next cycle to retry.
+    """
+    for symbol in list(exposures.keys()):
+        exposure = exposures[symbol]
+        if not any(leg.orphaned for leg in exposure.legs):
+            continue
+        remaining: List = []
+        for leg in exposure.legs:
+            if not leg.orphaned:
+                remaining.append(leg)
+                continue
+            if not reconcile_orphan(exposure, leg):
+                remaining.append(leg)  # still live/unverifiable; keep retrying
+        exposure.legs = remaining
+        if not exposure.legs:
+            exposures.pop(symbol, None)
+
+
 def process_iteration(
     exposures: Dict[str, SymbolExposure], funding_cache: FundingCache
 ) -> None:
     """Run one full poll cycle: fetch data, unwind stale legs, evaluate entries."""
+    # Resolve any known venue desync first so caps and unwind logic operate on
+    # an accurate book.
+    _reconcile_orphans(exposures)
     (
         extended_quotes,
         pacifica_quotes,

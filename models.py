@@ -13,6 +13,11 @@ class Leg:
     extended_amount: float
     usd_size: Decimal
     entry_ratio: Decimal
+    # Set when the two venues are known to be out of sync for this leg (e.g. a
+    # hedge open whose rollback failed, or an unwind whose Pacifica re-open
+    # failed). An orphaned leg is still tracked/counted in risk caps but must be
+    # force-reconciled against venue truth before it is treated as a clean hedge.
+    orphaned: bool = False
 
 
 @dataclass
