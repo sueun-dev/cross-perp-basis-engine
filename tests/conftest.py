@@ -1,8 +1,8 @@
 """Test bootstrap.
 
 `trade_operations` imports the two exchange clients at module load. Those clients
-pull in heavy SDKs (solders, x10) and refuse to import without live credentials.
-For unit-testing the pure logic we install lightweight stand-ins into
+pull in network/SDK dependencies, and the unit tests should not depend on live
+venue credentials or API calls. For pure-logic coverage we install stand-ins into
 ``sys.modules`` *before* anything imports them, so the trading maths can be
 exercised in isolation with deterministic rounding.
 """

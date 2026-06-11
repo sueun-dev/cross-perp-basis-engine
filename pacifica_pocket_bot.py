@@ -8,38 +8,39 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import requests
 from requests import HTTPError
-from solders.keypair import Keypair
 
 from pacifica_python_sdk.common.constants import REST_URL
-from pacifica_python_sdk.common.utils import sign_message
 
 from env_loader import load_env
 
 load_env()
+
+try:
+    from pacifica_python_sdk.common.utils import sign_message
+except ImportError as exc:  # pragma: no cover - live signing requires base58/solders
+    sign_message = None  # type: ignore[assignment]
+    _SIGN_IMPORT_ERROR: Optional[ImportError] = exc
+else:
+    _SIGN_IMPORT_ERROR = None
+
+try:
+    from solders.keypair import Keypair
+except ImportError as exc:  # pragma: no cover - live signing requires solders
+    Keypair = None  # type: ignore[assignment]
+    _SOLDERS_IMPORT_ERROR: Optional[ImportError] = exc
+else:
+    _SOLDERS_IMPORT_ERROR = None
 
 # ---- Configuration ----
 ACCOUNT = os.environ.get("PACIFICA_ACCOUNT", "").strip()
 AGENT_PRIVATE_KEY = os.environ.get("PACIFICA_AGENT_PRIVATE_KEY", "").strip()
 API_KEY = os.environ.get("PACIFICA_API_KEY", "").strip()
 
-if not ACCOUNT:
-    raise RuntimeError("PACIFICA_ACCOUNT (퍼블릭키) 환경변수가 필요합니다.")
-if not AGENT_PRIVATE_KEY:
-    raise RuntimeError("PACIFICA_AGENT_PRIVATE_KEY 환경변수가 필요합니다.")
-if not API_KEY:
-    raise RuntimeError("PACIFICA_API_KEY 환경변수가 필요합니다.")
-
-if AGENT_PRIVATE_KEY and API_KEY:
-    AGENT_KEYPAIR = Keypair.from_base58_string(AGENT_PRIVATE_KEY)
-    AGENT_PUBLIC_KEY = str(AGENT_KEYPAIR.pubkey())
-else:
-    AGENT_KEYPAIR = None
-    AGENT_PUBLIC_KEY = None
-
 REST = REST_URL.rstrip("/")
+SESSION = requests.Session()
 HEADERS = {"Content-Type": "application/json"}
-if API_KEY:
-    HEADERS["x-api-key"] = API_KEY
+AGENT_KEYPAIR: Optional[Any] = None
+AGENT_PUBLIC_KEY: Optional[str] = None
 
 
 _MARKET_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -47,11 +48,45 @@ _MARKET_INFO_LOADED = False
 _ACCOUNT_SETTINGS_CACHE: Dict[str, Tuple[bool, int]] = {}
 
 
+def _headers() -> Dict[str, str]:
+    headers = dict(HEADERS)
+    if API_KEY:
+        headers["x-api-key"] = API_KEY
+    return headers
+
+
+def _require_api_key() -> None:
+    if not API_KEY:
+        raise RuntimeError("PACIFICA_API_KEY 환경변수가 필요합니다.")
+
+
+def _require_account() -> None:
+    if not ACCOUNT:
+        raise RuntimeError("PACIFICA_ACCOUNT (퍼블릭키) 환경변수가 필요합니다.")
+
+
+def _get_agent_keypair() -> Tuple[Any, str]:
+    global AGENT_KEYPAIR, AGENT_PUBLIC_KEY
+    _require_api_key()
+    if Keypair is None:
+        raise RuntimeError(
+            "solders 패키지가 설치되어야 Pacifica 주문 서명을 사용할 수 있습니다. "
+            "pip install solders"
+        ) from _SOLDERS_IMPORT_ERROR
+    if not AGENT_PRIVATE_KEY:
+        raise RuntimeError("PACIFICA_AGENT_PRIVATE_KEY 환경변수가 필요합니다.")
+    if AGENT_KEYPAIR is None or AGENT_PUBLIC_KEY is None:
+        AGENT_KEYPAIR = Keypair.from_base58_string(AGENT_PRIVATE_KEY)
+        AGENT_PUBLIC_KEY = str(AGENT_KEYPAIR.pubkey())
+    return AGENT_KEYPAIR, AGENT_PUBLIC_KEY
+
+
 def _get_orderbook(symbol: str) -> Dict[str, Any]:
-    response = requests.get(
+    _require_api_key()
+    response = SESSION.get(
         f"{REST}/book",
         params={"symbol": symbol},
-        headers=HEADERS,
+        headers=_headers(),
         timeout=10,
     )
     response.raise_for_status()
@@ -72,12 +107,13 @@ def get_mid_price(symbol: str) -> float:
 
 def _ensure_market_info_loaded(force_refresh: bool = False) -> None:
     global _MARKET_INFO_LOADED
+    _require_api_key()
     if force_refresh:
         _MARKET_INFO_CACHE.clear()
         _MARKET_INFO_LOADED = False
     if _MARKET_INFO_LOADED:
         return
-    response = requests.get(f"{REST}/info", headers=HEADERS, timeout=10)
+    response = SESSION.get(f"{REST}/info", headers=_headers(), timeout=10)
     response.raise_for_status()
     payload = response.json()
     markets = payload.get("data")
@@ -201,13 +237,20 @@ def _get_top_of_book(symbol: str) -> Dict[str, Any]:
     return result
 
 
-def list_market_quotes(use_cache: bool = True) -> Dict[str, Dict[str, Any]]:
+def list_market_quotes(
+    use_cache: bool = True,
+    symbols: Optional[Iterable[str]] = None,
+) -> Dict[str, Dict[str, Any]]:
     _ensure_market_info_loaded(force_refresh=not use_cache)
+    if symbols is None:
+        symbols_to_fetch = list_symbols()
+    else:
+        symbols_to_fetch = sorted({symbol.upper() for symbol in symbols if symbol})
     quotes: Dict[str, Dict[str, Any]] = {}
-    for symbol in list_symbols():
+    for symbol in symbols_to_fetch:
         try:
             quotes[symbol] = _get_top_of_book(symbol)
-        except (HTTPError, requests.RequestException) as exc:
+        except (HTTPError, requests.RequestException, RuntimeError) as exc:
             quotes[symbol] = {"error": str(exc)}
     return quotes
 
@@ -281,21 +324,26 @@ def format_base_amount(symbol: str, amount: Decimal | float | str) -> str:
 
 
 def _sign_and_post(path: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not AGENT_KEYPAIR or not AGENT_PUBLIC_KEY:
-        raise RuntimeError("에이전트 키가 없으면 이 작업을 실행할 수 없습니다.")
+    _require_account()
+    agent_keypair, agent_public_key = _get_agent_keypair()
+    if sign_message is None:
+        raise RuntimeError(
+            "base58/solders 의존성이 설치되어야 Pacifica 주문 서명을 사용할 수 있습니다. "
+            "pip install base58 solders"
+        ) from _SIGN_IMPORT_ERROR
 
     timestamp = int(time.time() * 1_000)
     header = {"timestamp": timestamp, "expiry_window": 5_000, "type": action}
-    _, signature = sign_message(header, payload, AGENT_KEYPAIR)
+    _, signature = sign_message(header, payload, agent_keypair)
     body = {
         "account": ACCOUNT,
-        "agent_wallet": AGENT_PUBLIC_KEY,
+        "agent_wallet": agent_public_key,
         "signature": signature,
         "timestamp": timestamp,
         "expiry_window": header["expiry_window"],
         **payload,
     }
-    response = requests.post(f"{REST}{path}", json=body, headers=HEADERS, timeout=10)
+    response = SESSION.post(f"{REST}{path}", json=body, headers=_headers(), timeout=10)
     if not response.ok:
         print(f"[ERROR] {path} {response.status_code}: {response.text}")
         response.raise_for_status()
@@ -341,10 +389,12 @@ def _ensure_margin_settings(symbol: str, *, leverage: int = 1, is_isolated: bool
 
 
 def get_positions() -> Dict[str, Any]:
-    response = requests.get(
+    _require_account()
+    _require_api_key()
+    response = SESSION.get(
         f"{REST}/positions",
         params={"account": ACCOUNT},
-        headers=HEADERS,
+        headers=_headers(),
         timeout=10,
     )
     response.raise_for_status()
@@ -352,10 +402,12 @@ def get_positions() -> Dict[str, Any]:
 
 
 def get_balances() -> Dict[str, Any]:
-    response = requests.get(
+    _require_account()
+    _require_api_key()
+    response = SESSION.get(
         f"{REST}/account",
         params={"account": ACCOUNT},
-        headers=HEADERS,
+        headers=_headers(),
         timeout=10,
     )
     response.raise_for_status()
@@ -431,7 +483,9 @@ if __name__ == "__main__":
     except RuntimeError as exc:
         print(f"Balance fetch failed: {exc}")
 
-    if not AGENT_KEYPAIR:
+    try:
+        _get_agent_keypair()
+    except RuntimeError:
         print("Agent keys not configured. Skipping trade test.")
         raise SystemExit(0)
 

@@ -13,6 +13,7 @@ from config import (
     MAX_TOTAL_USD,
     MAX_USD_PER_SYMBOL,
     POLL_INTERVAL,
+    REQUIRE_FLAT_START,
     TOP_OPP_LOG_COUNT,
     TRADE_USD,
     TAKE_PROFIT_THRESHOLD,
@@ -27,6 +28,7 @@ from opportunity_analysis import (
 )
 from trade_operations import (
     OrphanedLegError,
+    assert_startup_flat,
     active_symbols,
     close_all_legs,
     compute_trade_leg,
@@ -258,6 +260,9 @@ def process_iteration(
 def run() -> None:
     exposures: Dict[str, SymbolExposure] = {}
     funding_cache = FundingCache()
+    if REQUIRE_FLAT_START:
+        LOGGER.info("Checking both venues are flat before starting with an empty book...")
+        assert_startup_flat()
     try:
         while True:
             try:

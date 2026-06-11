@@ -22,6 +22,13 @@ MAX_USD_PER_SYMBOL = Decimal("250")
 MAX_TOTAL_USD = Decimal("250")
 MAX_ACTIVE_SYMBOLS = 3
 
+# 비워두면 두 거래소에 공통으로 존재하는 모든 심볼을 스캔합니다.
+# 예: ("BTC", "ETH") 로 제한하면 Pacifica orderbook 호출 수를 줄일 수 있습니다.
+SYMBOL_ALLOWLIST: tuple[str, ...] = ()
+
+# 시작 시 실제 거래소에 이미 열린 포지션이 있으면 빈 장부로 실행하지 않습니다.
+REQUIRE_FLAT_START = True
+
 # 루프 주기 및 로그 설정
 POLL_INTERVAL = 10.0  # 초
 LOG_LEVEL = "INFO"
