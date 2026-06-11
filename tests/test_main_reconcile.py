@@ -11,9 +11,11 @@ positions on the following cycle.
 
 from decimal import Decimal
 
+import pytest
+
 import main
 import trade_operations as ops
-from models import Leg, SymbolExposure
+from models import Leg, Opportunity, SymbolExposure
 
 
 def _leg():
@@ -53,8 +55,6 @@ def test_evaluate_entries_records_orphan_and_counts_in_caps(
     # Drive the single-symbol path of _evaluate_entries by calling the same
     # bookkeeping it performs. We invoke the real function with a hand-built
     # opportunity to exercise the except-branch.
-    from models import Opportunity
-
     opp = Opportunity(
         base_symbol="BTC",
         extended_symbol="BTC-USD",
@@ -81,6 +81,44 @@ def test_evaluate_entries_records_orphan_and_counts_in_caps(
     assert exposures["BTC"].legs[0].orphaned is True
     assert ops.total_exposure_usd(exposures) == Decimal("20.2")  # counted in caps
     assert exp  # silence unused
+
+
+def test_evaluate_entries_dry_run_does_not_place_or_record(
+    pacifica_stub, extended_stub
+):
+    exposures: dict = {}
+    opp = Opportunity(
+        base_symbol="BTC",
+        extended_symbol="BTC-USD",
+        high_exchange="extended",
+        low_exchange="pacifica",
+        sell_price=101.0,
+        buy_price=100.0,
+        ratio=Decimal("0.05"),
+    )
+    pacifica_stub.LOTS["BTC"] = Decimal("0.01")
+    extended_stub.LOTS["BTC-USD"] = Decimal("0.001")
+
+    main._evaluate_entries(
+        exposures,
+        [opp],
+        {"BTC": Decimal("0")},
+        {"BTC": Decimal("0.001")},
+        dry_run=True,
+    )
+
+    assert exposures == {}
+    assert pacifica_stub.CALLS == []
+    assert extended_stub.CALLS == []
+
+
+def test_live_confirmation_requires_exact_env(monkeypatch):
+    monkeypatch.delenv(main.LIVE_TRADING_CONFIRM_ENV, raising=False)
+    with pytest.raises(RuntimeError):
+        main._require_live_confirmation()
+
+    monkeypatch.setenv(main.LIVE_TRADING_CONFIRM_ENV, main.LIVE_TRADING_CONFIRM_VALUE)
+    main._require_live_confirmation()
 
 
 def test_reconcile_orphans_flattens_and_drops_on_next_cycle(pacifica_stub, extended_stub):

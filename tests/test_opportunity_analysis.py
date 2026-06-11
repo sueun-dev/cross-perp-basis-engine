@@ -5,6 +5,8 @@ import pytest
 from models import Opportunity
 from opportunity_analysis import (
     compute_net_funding,
+    estimated_entry_cost,
+    estimated_net_entry_edge,
     evaluate_opportunities,
     funding_is_favorable,
 )
@@ -110,3 +112,13 @@ def test_funding_is_favorable_false_when_net_negative():
 def test_funding_is_favorable_false_when_missing():
     opp = _opp()
     assert funding_is_favorable(opp, {}, {}) is False
+
+
+def test_estimated_entry_cost_counts_both_venue_legs():
+    assert estimated_entry_cost(Decimal("0.0005"), Decimal("0.0005")) == Decimal("0.0020")
+
+
+def test_estimated_net_entry_edge_subtracts_cost_buffer():
+    opp = _opp()
+    edge = estimated_net_entry_edge(opp, Decimal("0.0005"), Decimal("0.0005"))
+    assert edge == Decimal("0.0080")

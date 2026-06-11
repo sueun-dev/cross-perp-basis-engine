@@ -78,6 +78,24 @@ def compute_net_funding(
     return short_rate - long_rate
 
 
+def estimated_entry_cost(
+    taker_fee_rate_per_leg: Decimal,
+    slippage_rate_per_leg: Decimal,
+) -> Decimal:
+    return (taker_fee_rate_per_leg + slippage_rate_per_leg) * Decimal("2")
+
+
+def estimated_net_entry_edge(
+    opportunity: Opportunity,
+    taker_fee_rate_per_leg: Decimal,
+    slippage_rate_per_leg: Decimal,
+) -> Decimal:
+    return opportunity.ratio - estimated_entry_cost(
+        taker_fee_rate_per_leg,
+        slippage_rate_per_leg,
+    )
+
+
 def funding_is_favorable(
     opportunity: Opportunity,
     pacifica_funding: Dict[str, Optional[Decimal]],

@@ -17,12 +17,14 @@ pip install -r requirements.txt        # 실행용 (개발/테스트는 requirem
 ### 빠른 시작
 1. `cp .env.example .env` 후 두 거래소의 인증정보를 채웁니다(아래 변수 이름 그대로).
 2. `config.py`에서 진입/청산 임계값과 리스크 한도를 조정합니다.
-3. 실제 거래소에 남아 있는 수동 포지션이 없는지 확인합니다. 기본값은 `REQUIRE_FLAT_START = True`라서 봇 시작 시 양쪽 포지션을 조회하고, 이미 열린 포지션이 있으면 빈 장부로 시작하지 않고 중단합니다.
+3. 기본값은 `DRY_RUN = True`입니다. 이 상태에서는 실제 주문을 내지 않고 진입 후보만 로그로 남깁니다.
 4. 다음 명령으로 루프를 시작합니다.
    ```bash
    python3 main.py
    ```
-5. 종료할 때는 `Ctrl+C`를 누르면 남아 있는 레그를 정리한 뒤 종료합니다. 루프 도중 한 사이클이 실패해도 봇은 죽지 않고 다음 주기에 재시도합니다(포지션 유지).
+5. 실제 주문 모드로 바꾸려면 `config.py`에서 `DRY_RUN = False`로 변경하고, 실행 환경에 `CROSS_PERP_LIVE_TRADING=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS`를 설정해야 합니다.
+6. 실제 거래소에 남아 있는 수동 포지션이 없는지 확인합니다. live 모드 기본값은 `REQUIRE_FLAT_START = True`라서 봇 시작 시 양쪽 포지션을 조회하고, 이미 열린 포지션이 있으면 빈 장부로 시작하지 않고 중단합니다.
+7. 종료할 때는 `Ctrl+C`를 누르면 남아 있는 레그를 정리한 뒤 종료합니다. 루프 도중 한 사이클이 실패해도 봇은 죽지 않고 다음 주기에 재시도합니다(포지션 유지).
 
 ### config.py 설정 예시 (현재 기본값)
 ```python
@@ -34,9 +36,17 @@ TAKE_PROFIT_THRESHOLD = Decimal("0.01") # 진입 대비 1%p 좁혀지면 익절
 MAX_USD_PER_SYMBOL = Decimal("250")
 MAX_TOTAL_USD = Decimal("250")
 MAX_ACTIVE_SYMBOLS = 3
+DRY_RUN = True
+LIVE_TRADING_CONFIRM_ENV = "CROSS_PERP_LIVE_TRADING"
+LIVE_TRADING_CONFIRM_VALUE = "I_UNDERSTAND_THIS_PLACES_REAL_ORDERS"
+PERSIST_STATE = True
+STATE_FILE = "state/exposures.json"
 SYMBOL_ALLOWLIST = ()                   # 예: ("BTC", "ETH")
 REQUIRE_FLAT_START = True
 POLL_INTERVAL = 10.0                     # 초
+ESTIMATED_TAKER_FEE_RATE_PER_LEG = Decimal("0.0005")
+ESTIMATED_SLIPPAGE_RATE_PER_LEG = Decimal("0.0005")
+MIN_NET_ENTRY_EDGE = Decimal("0")
 ```
 값은 위험 성향에 맞게 자유롭게 조정하세요.
 
@@ -58,15 +68,18 @@ python3 main.py
 변수 이름은 `pacifica_pocket_bot.py` / `extended_pocket_bot.py`가 요구하는 값과 정확히 일치해야 합니다. 로컬에서는 `cp .env.example .env` 후 값을 채우면 `env_loader.py`가 자동으로 읽어옵니다. CI/CD나 서버에서는 위와 같이 `export`를 사용하세요.
 
 ### 모듈 구성
-1. `main.py` – 시작 전 flat-start 검증 후 시장 데이터 요청 → 기회 평가 → 리스크 검사 → 주문 실행 → 슬립 순으로 수행합니다.
+1. `main.py` – dry-run/live guard, state load/save, 시작 전 flat-start 검증 후 시장 데이터 요청 → 기회 평가 → 리스크 검사 → 주문 실행 → 슬립 순으로 수행합니다.
 2. `market_data.py` – Extended 심볼 집합을 기준으로 Pacifica orderbook 호출 범위를 줄이고, 시세/펀딩 캐시(`FundingCache`)를 관리합니다.
 3. `opportunity_analysis.py` – 스프레드 계산, 펀딩 검증, 후보 순위를 담당합니다.
 4. `trade_operations.py` – 주문 수량 반올림, 포지션 오픈/클로즈, orphaned leg 복구, 시작 시 기존 포지션 검증을 맡습니다.
 5. `models.py` – `Leg`, `SymbolExposure`, `Opportunity` 등의 데이터 클래스를 정의합니다.
 6. `app_logging.py`, `funding_cache.py` – 로깅 초기화와 펀딩 캐시 구조체를 제공합니다.
+7. `state_store.py` – live 모드 exposure book을 JSON으로 저장/복원합니다.
 
 ### 실행 중 변경 포인트
 - 스프레드 임계값이나 최대 익스포저 한도는 `config.py`에서 조정합니다.
+- 실제 주문을 켜려면 `DRY_RUN = False`와 confirmation 환경 변수가 둘 다 필요합니다.
+- live 모드에서는 `PERSIST_STATE = True`로 exposure book을 `STATE_FILE`에 저장합니다. 이 파일은 `.gitignore` 처리되어 GitHub에 올라가지 않습니다.
 - 거래소별 수량 반올림 규칙이나 롤백 로직을 바꾸려면 `trade_operations.py`를 수정합니다.
 - 펀딩 검증에 추가 조건을 붙이고 싶다면 `opportunity_analysis.py`를 확장하세요.
 - 심볼을 제한해 API 호출 수를 줄이고 싶다면 `config.py`의 `SYMBOL_ALLOWLIST`를 설정합니다.
@@ -81,6 +94,10 @@ python3 main.py
 - 구문 검사: `python3 -m py_compile *.py`
 - credential 없이 `import main` 가능
 - 시작 시 기존 Pacifica/Extended 포지션이 감지되면 중단하는 테스트
+- 기본 dry-run에서 주문 호출/장부 기록을 하지 않는 테스트
+- live confirmation 환경 변수가 없으면 실주문 모드를 막는 테스트
+- exposure state 저장/복원 테스트
+- fee/slippage 추정치를 차감한 net edge 계산 테스트
 - orphaned leg 추적/강제 reconcile 로직의 스텁 기반 테스트
 
 아직 검증되지 않은 범위:
@@ -118,12 +135,14 @@ pip install -r requirements.txt        # runtime (use requirements-dev.txt for t
 ### Quick Start
 1. `cp .env.example .env` and fill in both exchanges’ credentials (exact variable names below).
 2. Tune entry/exit thresholds and risk limits in `config.py`.
-3. Confirm there are no manual/live positions left on either venue. By default `REQUIRE_FLAT_START = True`, so startup fetches both venues' positions and aborts rather than starting with an empty local book while live exposure already exists.
+3. The default is `DRY_RUN = True`. In this mode the bot logs qualifying entries but does not submit live orders.
 4. Launch the loop:
    ```bash
    python3 main.py
    ```
-5. Stop with `Ctrl+C`; the loop closes any remaining legs before exiting. A single failed cycle is logged and retried on the next poll — it no longer tears the bot down or force-closes open hedges.
+5. To enable live orders, set `DRY_RUN = False` in `config.py` and export `CROSS_PERP_LIVE_TRADING=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS`.
+6. Confirm there are no manual/live positions left on either venue. In live mode the default `REQUIRE_FLAT_START = True` fetches both venues' positions and aborts rather than starting with an empty local book while live exposure already exists.
+7. Stop with `Ctrl+C`; the loop closes any remaining legs before exiting. A single failed cycle is logged and retried on the next poll — it no longer tears the bot down or force-closes open hedges.
 
 ### config.py Settings (current defaults)
 ```python
@@ -135,9 +154,17 @@ TAKE_PROFIT_THRESHOLD = Decimal("0.01") # Take profit after 1pp compression
 MAX_USD_PER_SYMBOL = Decimal("250")
 MAX_TOTAL_USD = Decimal("250")
 MAX_ACTIVE_SYMBOLS = 3
+DRY_RUN = True
+LIVE_TRADING_CONFIRM_ENV = "CROSS_PERP_LIVE_TRADING"
+LIVE_TRADING_CONFIRM_VALUE = "I_UNDERSTAND_THIS_PLACES_REAL_ORDERS"
+PERSIST_STATE = True
+STATE_FILE = "state/exposures.json"
 SYMBOL_ALLOWLIST = ()                   # e.g. ("BTC", "ETH")
 REQUIRE_FLAT_START = True
 POLL_INTERVAL = 10.0                     # seconds
+ESTIMATED_TAKER_FEE_RATE_PER_LEG = Decimal("0.0005")
+ESTIMATED_SLIPPAGE_RATE_PER_LEG = Decimal("0.0005")
+MIN_NET_ENTRY_EDGE = Decimal("0")
 ```
 Adjust these knobs to match your risk tolerance.
 
@@ -159,15 +186,18 @@ python3 main.py
 The variable names must match exactly what `pacifica_pocket_bot.py` / `extended_pocket_bot.py` expect. Locally, `cp .env.example .env` and fill in the values — `env_loader.py` loads them automatically. For CI/CD or servers, export the variables as shown.
 
 ### Module Layout
-1. `main.py` – checks for a flat startup book, then fetches data → evaluates spreads → enforces risk → submits orders → sleeps.
+1. `main.py` – enforces dry-run/live guards, loads/saves state, checks for a flat startup book, then fetches data → evaluates spreads → enforces risk → submits orders → sleeps.
 2. `market_data.py` – uses Extended symbols to limit Pacifica orderbook fanout and manages the `FundingCache`.
 3. `opportunity_analysis.py` – ranks spreads and validates funding differentials.
 4. `trade_operations.py` – rounds trade sizes, opens/closes hedges, tracks exposure, reconciles orphaned legs, and checks startup positions.
 5. `models.py` – defines `Leg`, `SymbolExposure`, and `Opportunity` dataclasses.
 6. `app_logging.py`, `funding_cache.py` – provide logging configuration and the funding cache struct.
+7. `state_store.py` – persists and reloads the live exposure book as JSON.
 
 ### Where to Tweak Behaviour
 - Edit spread thresholds and exposure caps inside `config.py`.
+- Live order placement requires both `DRY_RUN = False` and the exact confirmation environment variable.
+- In live mode, `PERSIST_STATE = True` writes the exposure book to `STATE_FILE`; the runtime state directory is git-ignored.
 - Update rounding rules or rollback handling in `trade_operations.py` if exchange specs change.
 - Extend funding or spread filters in `opportunity_analysis.py`.
 - Set `SYMBOL_ALLOWLIST` in `config.py` to reduce quote fanout when you only want selected markets.
@@ -182,6 +212,10 @@ Currently verified:
 - Syntax compilation: `python3 -m py_compile *.py`
 - `import main` works without live credentials
 - Startup aborts when existing Pacifica/Extended positions are reported
+- Dry-run mode does not place orders or record live exposure
+- Live mode requires the explicit confirmation environment variable
+- Exposure state persistence round-trips Decimal fields
+- Estimated fee/slippage buffers are subtracted from gross entry edge
 - Orphaned-leg tracking and forced reconciliation are covered with stubs
 
 Not yet verified:
