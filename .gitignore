@@ -12,6 +12,9 @@ venv/
 .venv/
 venv/
 
+# Runtime state
+state/
+
 # Tooling caches
 .ruff_cache/
 

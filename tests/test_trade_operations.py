@@ -129,6 +129,34 @@ def test_exposure_accounting_helpers():
     assert ops.total_exposure_usd(exposures) == Decimal("20.2")
 
 
+def test_assert_startup_flat_passes_when_both_venues_flat(pacifica_stub, extended_stub):
+    pacifica_stub.POSITIONS = {"data": []}
+    extended_stub.POSITIONS = {"data": []}
+    ops.assert_startup_flat()
+
+
+def test_assert_startup_flat_aborts_on_existing_pacifica_position(
+    pacifica_stub, extended_stub
+):
+    pacifica_stub.POSITIONS = {
+        "data": [{"symbol": "BTC", "side": "bid", "amount": "0.2"}]
+    }
+    extended_stub.POSITIONS = {"data": []}
+    with pytest.raises(ops.StartupPositionError, match="Pacifica BTC bid 0.2"):
+        ops.assert_startup_flat()
+
+
+def test_assert_startup_flat_aborts_on_existing_extended_position(
+    pacifica_stub, extended_stub
+):
+    pacifica_stub.POSITIONS = {"data": []}
+    extended_stub.POSITIONS = {
+        "data": [{"market": "BTC-USD", "side": "SHORT", "size": "0.2"}]
+    }
+    with pytest.raises(ops.StartupPositionError, match="Extended BTC-USD short 0.2"):
+        ops.assert_startup_flat()
+
+
 # --- Audit #1: a filled Pacifica leg must never be silently dropped ----------
 
 

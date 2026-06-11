@@ -29,6 +29,70 @@ class OrphanedLegError(Exception):
         self.cause = cause
 
 
+class StartupPositionError(RuntimeError):
+    """Raised when the bot would start with unknown live venue exposure."""
+
+
+def _to_decimal(value: object) -> Optional[Decimal]:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _pacifica_live_position_summaries(payload: Dict[str, object]) -> list[str]:
+    live: list[str] = []
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return live
+    for pos in data:
+        if not isinstance(pos, dict):
+            continue
+        amount = _to_decimal(pos.get("amount", "0"))
+        if amount is None or amount <= 0:
+            continue
+        symbol = str(pos.get("symbol", "")).upper() or "UNKNOWN"
+        side = str(pos.get("side", "")).lower() or "unknown"
+        live.append(f"Pacifica {symbol} {side} {amount}")
+    return live
+
+
+def _extended_live_position_summaries(payload: Dict[str, object]) -> list[str]:
+    live: list[str] = []
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return live
+    for pos in data:
+        if not isinstance(pos, dict):
+            continue
+        size = _to_decimal(pos.get("size", "0"))
+        if size is None or size == 0:
+            continue
+        symbol = str(pos.get("market") or pos.get("symbol") or "").upper() or "UNKNOWN"
+        side = str(pos.get("side", "")).lower() or "unknown"
+        live.append(f"Extended {symbol} {side} {abs(size)}")
+    return live
+
+
+def assert_startup_flat() -> None:
+    """Abort startup if either venue reports live positions.
+
+    The in-memory exposure book starts empty. Running with existing venue
+    exposure would make the bot's risk caps and unwind decisions wrong, so fail
+    closed until the operator flattens or adds an explicit state import flow.
+    """
+    pacifica_payload = pacifica.get_positions()
+    extended_payload = extended.get_positions()
+    live_positions = _pacifica_live_position_summaries(
+        pacifica_payload
+    ) + _extended_live_position_summaries(extended_payload)
+    if live_positions:
+        raise StartupPositionError(
+            "Startup aborted because live venue positions were found while the "
+            "local exposure book is empty: " + "; ".join(live_positions)
+        )
+
+
 def compute_trade_leg(opportunity: Opportunity, usd_notional: Decimal) -> Optional[Leg]:
     if opportunity.high_exchange == "extended":
         extended_side = "short"

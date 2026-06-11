@@ -143,13 +143,6 @@ BASE_URL_OVERRIDE = os.environ.get("EXTENDED_BASE_URL", "").strip()
 STREAM_URL_OVERRIDE = os.environ.get("EXTENDED_STREAM_URL", "").strip()
 USER_AGENT = os.environ.get("EXTENDED_USER_AGENT", "extended-pocket-bot/1.0").strip()
 
-if not API_KEY:
-    raise RuntimeError("EXTENDED_API_KEY 환경변수가 필요합니다.")
-if not STARK_PRIVATE_KEY or not STARK_PUBLIC_KEY or not STARK_VAULT_ID:
-    raise RuntimeError(
-        "EXTENDED_PRIVATE_KEY, EXTENDED_PUBLIC_KEY, EXTENDED_VAULT_ID 환경변수가 필요합니다."
-    )
-
 API_BASE_URL = BASE_URL_OVERRIDE or MAINNET_CONFIG_DATA.api_base_url
 STREAM_URL = STREAM_URL_OVERRIDE or MAINNET_CONFIG_DATA.stream_url
 REST = API_BASE_URL.rstrip("/")
@@ -157,7 +150,6 @@ REST = API_BASE_URL.rstrip("/")
 HEADERS = {
     "Content-Type": "application/json",
     "User-Agent": USER_AGENT,
-    "X-Api-Key": API_KEY,
 }
 
 SESSION = requests.Session()
@@ -179,9 +171,22 @@ def _require_order_side_enum() -> OrderSideType:
     return cast(OrderSideType, OrderSide)
 
 
+def _require_api_key() -> None:
+    if not API_KEY:
+        raise RuntimeError("EXTENDED_API_KEY 환경변수가 필요합니다.")
+
+
+def _headers() -> Dict[str, str]:
+    headers = dict(HEADERS)
+    if API_KEY:
+        headers["X-Api-Key"] = API_KEY
+    return headers
+
+
 def _api_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    _require_api_key()
     url = f"{REST}{path}"
-    response = SESSION.get(url, params=params, headers=HEADERS, timeout=10)
+    response = SESSION.get(url, params=params, headers=_headers(), timeout=10)
     response.raise_for_status()
     payload = response.json()
     status = payload.get("status")
@@ -411,6 +416,7 @@ def get_balances() -> Dict[str, Any]:
 
 
 def _ensure_trading_client() -> PerpetualTradingClientType:
+    _require_api_key()
     if (
         _X10_IMPORT_ERROR is not None
         or PerpetualTradingClient is None

@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from decimal import Decimal
 from typing import Dict, List, Optional
 
 from app_logging import configure as configure_logging
 from config import (
+    DRY_RUN,
     ENTRY_THRESHOLD,
+    ESTIMATED_SLIPPAGE_RATE_PER_LEG,
+    ESTIMATED_TAKER_FEE_RATE_PER_LEG,
+    LIVE_TRADING_CONFIRM_ENV,
+    LIVE_TRADING_CONFIRM_VALUE,
     EXIT_THRESHOLD,
     MAX_ACTIVE_SYMBOLS,
     MAX_TOTAL_USD,
     MAX_USD_PER_SYMBOL,
+    MIN_NET_ENTRY_EDGE,
+    PERSIST_STATE,
     POLL_INTERVAL,
+    REQUIRE_FLAT_START,
+    STATE_FILE,
     TOP_OPP_LOG_COUNT,
     TRADE_USD,
     TAKE_PROFIT_THRESHOLD,
@@ -22,11 +32,14 @@ from market_data import fetch_market_data
 from models import Opportunity, SymbolExposure
 from opportunity_analysis import (
     compute_net_funding,
+    estimated_net_entry_edge,
     evaluate_opportunities,
     funding_is_favorable,
 )
+from state_store import load_exposures, save_exposures
 from trade_operations import (
     OrphanedLegError,
+    assert_startup_flat,
     active_symbols,
     close_all_legs,
     compute_trade_leg,
@@ -37,6 +50,15 @@ from trade_operations import (
 
 
 LOGGER = configure_logging("main")
+
+
+def _require_live_confirmation() -> None:
+    actual = os.environ.get(LIVE_TRADING_CONFIRM_ENV, "")
+    if actual != LIVE_TRADING_CONFIRM_VALUE:
+        raise RuntimeError(
+            f"DRY_RUN=False requires {LIVE_TRADING_CONFIRM_ENV}="
+            f"{LIVE_TRADING_CONFIRM_VALUE!r}; refusing to place live orders."
+        )
 
 
 def _log_top_spreads(sorted_opportunities: List[Opportunity]) -> None:
@@ -126,6 +148,8 @@ def _evaluate_entries(
     sorted_opportunities: List[Opportunity],
     pacifica_funding: Dict[str, Optional[Decimal]],
     extended_funding: Dict[str, Optional[Decimal]],
+    *,
+    dry_run: bool = False,
 ) -> None:
     """Open new hedge legs for opportunities that clear the entry filters."""
     for opportunity in sorted_opportunities:
@@ -133,6 +157,19 @@ def _evaluate_entries(
         if opportunity.ratio <= ENTRY_THRESHOLD:
             continue
         if not funding_is_favorable(opportunity, pacifica_funding, extended_funding):
+            continue
+        net_edge = estimated_net_entry_edge(
+            opportunity,
+            ESTIMATED_TAKER_FEE_RATE_PER_LEG,
+            ESTIMATED_SLIPPAGE_RATE_PER_LEG,
+        )
+        if net_edge <= MIN_NET_ENTRY_EDGE:
+            LOGGER.debug(
+                "Skipping %s: estimated net edge %.6f <= minimum %.6f",
+                symbol,
+                float(net_edge),
+                float(MIN_NET_ENTRY_EDGE),
+            )
             continue
 
         direction = (opportunity.high_exchange, opportunity.low_exchange)
@@ -176,6 +213,19 @@ def _evaluate_entries(
                 symbol,
                 float(projected_total),
                 float(MAX_TOTAL_USD),
+            )
+            continue
+        if dry_run:
+            LOGGER.info(
+                "DRY_RUN would open %s: Pacifica %s %.8f, Extended %s %.8f, "
+                "gross edge %.4f, net edge %.4f",
+                symbol,
+                leg.pacifica_side,
+                float(leg.pacifica_amount),
+                leg.extended_side,
+                leg.extended_amount,
+                float(opportunity.ratio),
+                float(net_edge),
             )
             continue
 
@@ -233,7 +283,10 @@ def _reconcile_orphans(exposures: Dict[str, SymbolExposure]) -> None:
 
 
 def process_iteration(
-    exposures: Dict[str, SymbolExposure], funding_cache: FundingCache
+    exposures: Dict[str, SymbolExposure],
+    funding_cache: FundingCache,
+    *,
+    dry_run: bool = False,
 ) -> None:
     """Run one full poll cycle: fetch data, unwind stale legs, evaluate entries."""
     # Resolve any known venue desync first so caps and unwind logic operate on
@@ -252,16 +305,38 @@ def process_iteration(
 
     _log_top_spreads(sorted_opportunities)
     _unwind_stale_exposures(exposures, opportunities, pacifica_funding, extended_funding)
-    _evaluate_entries(exposures, sorted_opportunities, pacifica_funding, extended_funding)
+    _evaluate_entries(
+        exposures,
+        sorted_opportunities,
+        pacifica_funding,
+        extended_funding,
+        dry_run=dry_run,
+    )
 
 
 def run() -> None:
-    exposures: Dict[str, SymbolExposure] = {}
+    if DRY_RUN:
+        LOGGER.info("DRY_RUN enabled; no live orders will be submitted.")
+        exposures: Dict[str, SymbolExposure] = {}
+    else:
+        _require_live_confirmation()
+        exposures = load_exposures(STATE_FILE) if PERSIST_STATE else {}
+        if exposures:
+            LOGGER.warning(
+                "Loaded %d symbols from %s; continuing with persisted exposure book",
+                len(exposures),
+                STATE_FILE,
+            )
     funding_cache = FundingCache()
+    if not DRY_RUN and REQUIRE_FLAT_START and not exposures:
+        LOGGER.info("Checking both venues are flat before starting with an empty book...")
+        assert_startup_flat()
     try:
         while True:
             try:
-                process_iteration(exposures, funding_cache)
+                process_iteration(exposures, funding_cache, dry_run=DRY_RUN)
+                if not DRY_RUN and PERSIST_STATE:
+                    save_exposures(exposures, STATE_FILE)
             except KeyboardInterrupt:
                 raise
             except Exception:  # noqa: BLE001 - a single bad cycle must not kill the loop
@@ -280,6 +355,8 @@ def run() -> None:
                 LOGGER.exception(
                     "Failed to close %s during shutdown: %s", exposure.base_symbol, exc
                 )
+        if not DRY_RUN and PERSIST_STATE:
+            save_exposures(exposures, STATE_FILE)
 
 
 if __name__ == "__main__":

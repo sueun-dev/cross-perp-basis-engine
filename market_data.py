@@ -4,7 +4,7 @@ import time
 from decimal import Decimal
 from typing import Dict, Optional, Tuple
 
-from config import FUNDING_REFRESH_INTERVAL
+from config import FUNDING_REFRESH_INTERVAL, SYMBOL_ALLOWLIST
 from funding_cache import FundingCache
 import extended_pocket_bot as extended
 import pacifica_pocket_bot as pacifica
@@ -22,6 +22,7 @@ def fetch_market_data(
     Dict[str, Optional[Decimal]],
     Dict[str, Optional[Decimal]],
 ]:
+    allowed_symbols = {symbol.upper() for symbol in SYMBOL_ALLOWLIST}
     extended_quotes_raw = extended.list_market_quotes(use_cache=False)
     now = time.time()
     refresh_needed = (
@@ -43,12 +44,14 @@ def fetch_market_data(
 
     assert extended_funding_raw is not None
     assert pacifica_funding_raw is not None
-    pacifica_quotes_raw = pacifica.list_market_quotes()
-
     extended_quotes: Dict[str, Tuple[str, Dict[str, Optional[float]]]] = {}
     for ext_symbol, payload in extended_quotes_raw.items():
         base = _normalize_extended_symbol(ext_symbol)
+        if allowed_symbols and base not in allowed_symbols:
+            continue
         extended_quotes[base] = (ext_symbol, payload)
+
+    pacifica_quotes_raw = pacifica.list_market_quotes(symbols=extended_quotes.keys())
 
     pacifica_quotes: Dict[str, Dict[str, Optional[float]]] = {}
     for symbol, payload in pacifica_quotes_raw.items():
