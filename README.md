@@ -14,6 +14,31 @@ pip install -r requirements.txt        # 실행용 (개발/테스트는 requirem
 ```
 > Extended(X10) SDK는 PyPI에 없어 git에서 설치됩니다. 단순 import는 라이브 credential 없이도 가능하지만, 실제 API 호출과 주문 실행은 두 거래소의 API 키/계정 정보가 필요합니다.
 
+### 핵심 안전 기본값
+이 봇은 실계정 주문 실수를 막기 위해 기본값을 보수적으로 둡니다.
+
+| 항목 | 기본값 | 의미 |
+| --- | --- | --- |
+| `DRY_RUN` | `True` | 기본 실행은 실제 주문을 내지 않습니다. 진입 후보와 계산 결과만 로그로 확인합니다. |
+| live confirmation | 필수 | `DRY_RUN = False`로 바꿔도 `CROSS_PERP_LIVE_TRADING=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS`가 없으면 주문을 거부합니다. |
+| `PERSIST_STATE` | `True` | live 모드의 exposure book을 `state/exposures.json`에 저장하고 재시작 때 복원합니다. |
+| `state/` | git-ignored | 로컬 런타임 상태라서 GitHub에 올라가지 않습니다. |
+| net entry edge | fee/slippage 차감 | gross spread에서 추정 taker fee와 slippage buffer를 뺀 뒤 진입 여부를 판단합니다. |
+| `REQUIRE_FLAT_START` | `True` | 저장된 exposure book이 없을 때 기존 거래소 포지션이 감지되면 시작을 중단합니다. |
+
+실제 주문을 켜려면 두 단계를 모두 해야 합니다.
+
+```bash
+# 1) config.py
+DRY_RUN = False
+
+# 2) shell
+export CROSS_PERP_LIVE_TRADING=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS
+python3 main.py
+```
+
+이 저장소에서 검증된 것은 단위 테스트와 스텁 기반 안전 로직입니다. 실제 Pacifica/Extended 계정으로 양쪽 포지션을 열고 닫는 라이브 주문 테스트는 아직 완료되지 않았습니다.
+
 ### 빠른 시작
 1. `cp .env.example .env` 후 두 거래소의 인증정보를 채웁니다(아래 변수 이름 그대로).
 2. `config.py`에서 진입/청산 임계값과 리스크 한도를 조정합니다.
@@ -131,6 +156,31 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt        # runtime (use requirements-dev.txt for tests)
 ```
 > The Extended (X10) SDK has no PyPI release and is installed from git. Plain imports no longer require live credentials, but real API calls and live order placement require both venues' configured credentials.
+
+### Safety Defaults
+The bot defaults to conservative behavior to prevent accidental real-account orders.
+
+| Item | Default | Meaning |
+| --- | --- | --- |
+| `DRY_RUN` | `True` | Normal startup does not submit live orders. It only logs qualifying entries and calculations. |
+| live confirmation | required | Even with `DRY_RUN = False`, live orders are rejected unless `CROSS_PERP_LIVE_TRADING=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS` is set. |
+| `PERSIST_STATE` | `True` | In live mode, the exposure book is saved to `state/exposures.json` and reloaded on restart. |
+| `state/` | git-ignored | Runtime state stays local and is not pushed to GitHub. |
+| net entry edge | fee/slippage adjusted | Entry checks subtract estimated taker fees and slippage buffers from gross spread. |
+| `REQUIRE_FLAT_START` | `True` | If no saved exposure book exists, startup aborts when either venue already reports live positions. |
+
+Live orders require both steps:
+
+```bash
+# 1) config.py
+DRY_RUN = False
+
+# 2) shell
+export CROSS_PERP_LIVE_TRADING=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS
+python3 main.py
+```
+
+What is verified here is unit and stub-based safety behavior. Real live open/close tests against Pacifica and Extended accounts have not been completed yet.
 
 ### Quick Start
 1. `cp .env.example .env` and fill in both exchanges’ credentials (exact variable names below).
